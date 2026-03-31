@@ -48,49 +48,67 @@ st.markdown(
         color: inherit !important;
     }
 
-    .main h1, .main h2 {
-        color: #FFFFFF !important;
-    }
-
-    .main h3, .main h4, .main h5, .main h6 {
-        color: #F7E733 !important;
-    }
-
-    .main p,
-    .main li,
-    .main label,
-    .main span,
-    .main div,
-    .main .stMarkdown,
-    .main .stMarkdown p {
+    [data-testid="stAppViewContainer"] .main,
+    [data-testid="stAppViewContainer"] .main .block-container {
         color: #FFF8E7 !important;
     }
 
-    .main [data-testid="stMetricLabel"] {
-        color: #F7E733 !important;
-    }
-
-    .main [data-testid="stMetricValue"] {
+    [data-testid="stAppViewContainer"] .main h1,
+    [data-testid="stAppViewContainer"] .main h2,
+    [data-testid="stAppViewContainer"] .main h1 a,
+    [data-testid="stAppViewContainer"] .main h2 a {
         color: #FFFFFF !important;
     }
 
-    .main .stCaption {
+    [data-testid="stAppViewContainer"] .main h3,
+    [data-testid="stAppViewContainer"] .main h4,
+    [data-testid="stAppViewContainer"] .main h5,
+    [data-testid="stAppViewContainer"] .main h6,
+    [data-testid="stAppViewContainer"] .main h3 a,
+    [data-testid="stAppViewContainer"] .main h4 a,
+    [data-testid="stAppViewContainer"] .main h5 a,
+    [data-testid="stAppViewContainer"] .main h6 a {
         color: #F7E733 !important;
     }
 
-    .main .stAlert {
+    [data-testid="stAppViewContainer"] .main p,
+    [data-testid="stAppViewContainer"] .main li,
+    [data-testid="stAppViewContainer"] .main label,
+    [data-testid="stAppViewContainer"] .main .stMarkdown,
+    [data-testid="stAppViewContainer"] .main .stMarkdown p,
+    [data-testid="stAppViewContainer"] .main .stMarkdown li,
+    [data-testid="stAppViewContainer"] .main [data-testid="stText"],
+    [data-testid="stAppViewContainer"] .main [data-testid="stMarkdownContainer"] p,
+    [data-testid="stAppViewContainer"] .main [data-testid="stMarkdownContainer"] li {
+        color: #FFF8E7 !important;
+    }
+
+    [data-testid="stAppViewContainer"] .main [data-testid="stMetricLabel"] {
+        color: #F7E733 !important;
+    }
+
+    [data-testid="stAppViewContainer"] .main [data-testid="stMetricValue"] {
+        color: #FFFFFF !important;
+    }
+
+    [data-testid="stAppViewContainer"] .main .stCaption,
+    [data-testid="stAppViewContainer"] .main [data-testid="stCaptionContainer"] {
+        color: #F7E733 !important;
+    }
+
+    [data-testid="stAppViewContainer"] .main .stAlert {
         background-color: rgba(247, 231, 51, 0.14) !important;
         border: 1px solid rgba(247, 231, 51, 0.28) !important;
     }
 
-    .main .stAlert * {
+    [data-testid="stAppViewContainer"] .main .stAlert * {
         color: #FFF8E7 !important;
     }
     </style>
     """,
     unsafe_allow_html=True,
-
 )
+
 
 
 TECH_OPTIONS = ["ICE", "HEV", "PHEV", "BEV"]
