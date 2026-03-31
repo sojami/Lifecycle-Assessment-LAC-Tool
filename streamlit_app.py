@@ -122,6 +122,29 @@ KNOWN_VEHICLE_CATALOG = [
     {"label": "2024 Ford F-150 Lightning", "make": "Ford", "model": "F-150 Lightning", "year": 2024, "tech_type": "BEV", "vehicle_class": "pickup"},
 ]
 
+PRODUCTION_REGION_HINTS = {
+    ("Tesla", "Model 3"): "usa",
+    ("Tesla", "Model Y"): "usa",
+    ("Toyota", "Prius"): "japan",
+    ("Toyota", "RAV4"): "japan",
+    ("Toyota", "RAV4 Hybrid"): "japan",
+    ("Ford", "F-150 Lightning"): "usa",
+}
+
+MAKE_REGION_HINTS = {
+    "Tesla": "usa",
+    "Ford": "usa",
+    "Toyota": "japan",
+    "Hyundai": "south_korea",
+    "Kia": "south_korea",
+    "Volkswagen": "germany",
+    "BMW": "germany",
+    "Mercedes-Benz": "germany",
+    "Nissan": "japan",
+    "Honda": "japan",
+    "BYD": "china",
+}
+
 TECH_KEYWORDS = {
     "BEV": ["ev", "electric", "model 3", "model y", "leaf", "bolt", "ioniq 5", "mach-e"],
     "PHEV": ["plug-in", "phev", "prime", "volt"],
@@ -259,6 +282,13 @@ def get_vehicle_specs(make, model, year, vehicle_class, tech_type):
         "fuel_eff": 30 if safe_class == "sedan" else 22 if safe_class == "suv" else 18,
     }
 
+
+def validate_vehicle_entry(make, model, year, vehicle_class, tech_type) -> dict | None:
+    vc = (vehicle_class or "").strip().lower()
+    tt = (tech_type or "").strip().lower()
+    specs = engine_try_dynamic_lookup(make, model, year, vc, tt)
+    return specs if specs else None
+
 # --------------------------------------------------------------------
 # END OF REPLACEMENT
 # --------------------------------------------------------------------
@@ -269,6 +299,86 @@ def get_vehicle_suggestion(label: str) -> dict | None:
         if vehicle["label"] == label:
             return vehicle
     return None
+
+
+def get_model_suggestions(make: str, model_query: str) -> list[dict]:
+    normalized_make = (make or "").strip().lower()
+    normalized_query = (model_query or "").strip().lower()
+    suggestions = []
+    for vehicle in KNOWN_VEHICLE_CATALOG[1:]:
+        if normalized_make and vehicle["make"].lower() != normalized_make:
+            continue
+        if normalized_query and normalized_query not in vehicle["model"].lower():
+            continue
+        suggestions.append(vehicle)
+    return suggestions
+
+
+def suggest_production_region(make: str, model: str, tech_type: str) -> tuple[str, bool]:
+    exact_match = PRODUCTION_REGION_HINTS.get((make.strip(), model.strip()))
+    if exact_match:
+        return exact_match, False
+
+    make_match = MAKE_REGION_HINTS.get(make.strip())
+    if make_match:
+        return make_match, False
+
+    if tech_type in {"BEV", "PHEV", "HEV"}:
+        return "china", True
+    return "global_average", True
+
+
+def calculate_production_multiplier(region_defaults: dict) -> float:
+    global_grid = REGION_DEFAULTS["global_average"]["grid_kg_per_kwh"]
+    regional_grid = region_defaults.get("grid_kg_per_kwh", global_grid)
+    if global_grid <= 0:
+        return 1.0
+    return round(regional_grid / global_grid, 2)
+
+
+def render_production_region_inputs(prefix: str, vehicle_data: dict) -> dict:
+    tech_type = vehicle_data.get("tech_type", "ICE")
+    section_title = "Battery Production Region" if tech_type in {"BEV", "PHEV", "HEV"} else "Vehicle Production Region"
+    st.markdown(f"### {section_title}")
+
+    suggested_region, used_generic_hint = suggest_production_region(
+        vehicle_data.get("make", ""),
+        vehicle_data.get("model", ""),
+        tech_type,
+    )
+    suggested_index = REGION_OPTIONS.index(suggested_region) if suggested_region in REGION_OPTIONS else REGION_OPTIONS.index("global_average")
+    selected_region = st.selectbox(
+        section_title,
+        REGION_OPTIONS,
+        index=suggested_index,
+        key=f"{prefix}_production_region",
+        format_func=format_region_label,
+        help="Auto-suggested from available vehicle lookup hints; editable if you know the production region.",
+    )
+
+    if used_generic_hint:
+        st.caption("Production region was estimated from generic technology/manufacturer patterns and can be adjusted later.")
+    else:
+        st.caption("Production region was auto-suggested from available vehicle lookup hints and can be adjusted if needed.")
+
+    region_defaults, used_default_flag = lookup_region_defaults(selected_region.lower())
+    multiplier_label = "Battery Production Multiplier" if tech_type in {"BEV", "PHEV", "HEV"} else "Vehicle Production Multiplier"
+    suggested_multiplier = calculate_production_multiplier(region_defaults)
+    multiplier = st.number_input(
+        multiplier_label,
+        min_value=0.10,
+        step=0.01,
+        value=float(suggested_multiplier),
+        key=f"{prefix}_production_multiplier",
+        help="Auto-derived from the selected production region and intended for later upstream manufacturing calculations.",
+    )
+    return {
+        "region_key": selected_region,
+        "region_name": format_region_label(selected_region),
+        "region_defaults": region_defaults,
+        "used_default_flag": used_default_flag,
+        "multiplier": float(multiplier),
+    }
 
 
 def vehicle_summary(vehicle: VehicleInputs, result: EmissionResult) -> dict:
@@ -296,6 +406,13 @@ def build_emissions_curve_data(
     return miles, car_a_curve, car_b_curve
 
 
+def summarize_narrative(narrative: str) -> str:
+    paragraphs = [paragraph.strip() for paragraph in narrative.split("\n\n") if paragraph.strip()]
+    if not paragraphs:
+        return ""
+    return paragraphs[0]
+
+
 def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dict:
     st.markdown(f"### {title}")
     suggestion_label = st.selectbox(
@@ -318,6 +435,26 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
     model = st.text_input("Model", key=f"{prefix}_model")
     inferred_text = f"{make} {model}".strip()
 
+    model_suggestions = get_model_suggestions(make, model)
+    if model_suggestions and (make or model):
+        suggested_model_label = st.selectbox(
+            f"{title} model suggestions",
+            ["Keep typed entry"] + [vehicle["label"] for vehicle in model_suggestions],
+            key=f"{prefix}_model_suggestions",
+            help="Pick a suggested match to autofill the structured fields.",
+        )
+        if suggested_model_label != "Keep typed entry":
+            matched_vehicle = get_vehicle_suggestion(suggested_model_label)
+            if matched_vehicle:
+                st.session_state[f"{prefix}_make"] = matched_vehicle["make"]
+                st.session_state[f"{prefix}_model"] = matched_vehicle["model"]
+                st.session_state[f"{prefix}_include_year"] = matched_vehicle["year"] is not None
+                if matched_vehicle["year"] is not None:
+                    st.session_state[f"{prefix}_year"] = matched_vehicle["year"]
+                st.session_state[f"{prefix}_tech_type"] = matched_vehicle["tech_type"]
+                st.session_state[f"{prefix}_vehicle_class"] = matched_vehicle["vehicle_class"]
+                st.rerun()
+
     include_year = st.checkbox(
         "Include year",
         key=f"{prefix}_include_year",
@@ -336,15 +473,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             )
         )
 
-    detected_tech_type = detect_tech(inferred_text) if inferred_text else "ICE"
     detected_vehicle_class = detect_vehicle_class(inferred_text) if inferred_text else "other"
-    tech_type = st.selectbox(
-        "Technology Type",
-        TECH_OPTIONS,
-        index=TECH_OPTIONS.index(st.session_state.get(f"{prefix}_tech_type", detected_tech_type)),
-        key=f"{prefix}_tech_type",
-        help="Autofilled from a suggested vehicle when selected, but fully editable.",
-    )
     vehicle_class = st.selectbox(
         "Vehicle Class",
         CLASS_OPTIONS,
@@ -357,22 +486,51 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         key=f"{prefix}_vehicle_class",
         help="Autofilled from a suggested vehicle when selected.",
     )
+    detected_tech_type = detect_tech(inferred_text) if inferred_text else "ICE"
+    tech_type = st.selectbox(
+        "Technology Type",
+        TECH_OPTIONS,
+        index=TECH_OPTIONS.index(st.session_state.get(f"{prefix}_tech_type", detected_tech_type)),
+        key=f"{prefix}_tech_type",
+        help="Autofilled from a suggested vehicle when selected, but fully editable.",
+    )
 
     normalized_tech_type = tech_type.upper()
     normalized_vehicle_class = vehicle_class.lower()
-    specs = get_vehicle_specs(make, model, year, normalized_vehicle_class, normalized_tech_type)
-    resolved_tech_type = specs.get("tech_type", normalized_tech_type)
-    resolved_vehicle_class = specs.get("vehicle_class", normalized_vehicle_class)
-    if resolved_tech_type != tech_type:
-        tech_type = resolved_tech_type
-    if resolved_vehicle_class != vehicle_class:
-        vehicle_class = resolved_vehicle_class
+    specs = None
+    is_custom_entry = not suggested_vehicle or suggested_vehicle["label"] == "Custom entry"
+    lookup_mode = "empty"
+    lookup_message = ""
+    if make and model:
+        specs = validate_vehicle_entry(make, model, year, normalized_vehicle_class, normalized_tech_type)
+        if specs is None:
+            specs = get_vehicle_specs("", "", None, normalized_vehicle_class, normalized_tech_type)
+            lookup_mode = "class_fallback"
+            fallback_class = normalized_vehicle_class if normalized_vehicle_class != "other" else "sedan"
+            lookup_message = (
+                f"{title}: model '{model}' could not be found. Results will use class-based assumptions for "
+                f"'{fallback_class.replace('_', ' ')}'."
+            )
+            st.warning(lookup_message)
+        else:
+            lookup_mode = "exact"
+    elif not is_custom_entry:
+        specs = get_vehicle_specs(make, model, year, normalized_vehicle_class, normalized_tech_type)
+        lookup_mode = "suggested"
+
+    if specs:
+        resolved_tech_type = specs.get("tech_type", normalized_tech_type)
+        resolved_vehicle_class = specs.get("vehicle_class", normalized_vehicle_class)
+        if resolved_tech_type != tech_type:
+            tech_type = resolved_tech_type
+        if resolved_vehicle_class != vehicle_class:
+            vehicle_class = resolved_vehicle_class
 
     defaults = {
-        "fuel_economy_mpg": specs.get("fuel_economy_mpg", specs.get("fuel_eff")),
-        "kwh_per_mile": specs.get("kwh_per_mile"),
-        "battery_kwh": specs.get("battery_kwh"),
-        "vehicle_mfg_kg": specs.get("vehicle_mfg_kg", specs.get("curb_weight")),
+        "fuel_economy_mpg": specs.get("fuel_economy_mpg", specs.get("fuel_eff")) if specs else None,
+        "kwh_per_mile": specs.get("kwh_per_mile") if specs else None,
+        "battery_kwh": specs.get("battery_kwh") if specs else None,
+        "vehicle_mfg_kg": specs.get("vehicle_mfg_kg", specs.get("curb_weight")) if specs else None,
     }
     fuel_economy_mpg = None
     kwh_per_mile = None
@@ -384,7 +542,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             min_value=1.0,
             step=1.0,
             key=f"{prefix}_fuel_economy_mpg",
-            value=float(defaults["fuel_economy_mpg"]),
+            value=float(defaults["fuel_economy_mpg"] if defaults["fuel_economy_mpg"] is not None else 30.0),
         )
 
     if tech_type in {"BEV", "PHEV"}:
@@ -393,7 +551,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             min_value=0.01,
             step=0.01,
             key=f"{prefix}_kwh_per_mile",
-            value=float(defaults["kwh_per_mile"]),
+            value=float(defaults["kwh_per_mile"] if defaults["kwh_per_mile"] is not None else 0.30),
         )
 
     if tech_type in {"BEV", "PHEV", "HEV"}:
@@ -402,7 +560,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             min_value=0.1,
             step=0.1,
             key=f"{prefix}_battery_kwh",
-            value=float(defaults["battery_kwh"]),
+            value=float(defaults["battery_kwh"] if defaults["battery_kwh"] is not None else 60.0),
         )
 
     vehicle_mfg_kg = st.number_input(
@@ -410,7 +568,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         min_value=0.0,
         step=100.0,
         key=f"{prefix}_vehicle_mfg_kg",
-        value=float(defaults["vehicle_mfg_kg"]),
+        value=float(defaults["vehicle_mfg_kg"] if defaults["vehicle_mfg_kg"] is not None else 6500.0),
     )
     battery_mfg_kg_per_kwh = st.number_input(
         "Battery manufacturing factor (kg CO2e/kWh)",
@@ -434,6 +592,9 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         "battery_kwh": float(battery_kwh) if battery_kwh is not None else None,
         "vehicle_mfg_kg": float(vehicle_mfg_kg),
         "battery_mfg_kg_per_kwh": float(battery_mfg_kg_per_kwh),
+        "lookup_valid": specs is not None if make and model else False,
+        "lookup_mode": lookup_mode,
+        "lookup_message": lookup_message,
     }
 
 
@@ -526,7 +687,21 @@ with st.sidebar:
     st.header("Inputs")
     st.write("Use the quick-entry boxes, the structured fields, or a mix of both.")
 
-    st.markdown("### Region")
+    lifetime_miles = st.number_input(
+        "Lifetime mileage",
+        min_value=1_000.0,
+        max_value=500_000.0,
+        step=5_000.0,
+        value=150_000.0,
+    )
+
+    car_a = render_vehicle_inputs("car_a", "Car A", lifetime_miles)
+    car_a_production_region = render_production_region_inputs("car_a", car_a)
+    add_second_car = st.toggle("Compare with a second car")
+    car_b = render_vehicle_inputs("car_b", "Car B", lifetime_miles) if add_second_car else None
+    car_b_production_region = render_production_region_inputs("car_b", car_b) if add_second_car and car_b else None
+
+    st.markdown("### Use-Phase Region")
     default_region_index = REGION_OPTIONS.index("usa") if "usa" in REGION_OPTIONS else 0
     country = st.selectbox(
         "Country",
@@ -567,17 +742,6 @@ with st.sidebar:
         step=0.01,
         value=float(region_defaults["fuel_kg_per_gallon"]),
     )
-    lifetime_miles = st.number_input(
-        "Lifetime mileage",
-        min_value=1_000.0,
-        max_value=500_000.0,
-        step=5_000.0,
-        value=150_000.0,
-    )
-
-    car_a = render_vehicle_inputs("car_a", "Car A", lifetime_miles)
-    add_second_car = st.toggle("Compare with a second car")
-    car_b = render_vehicle_inputs("car_b", "Car B", lifetime_miles) if add_second_car else None
 
     run_clicked = st.button("Run Analysis", type="primary", use_container_width=True)
 
@@ -645,7 +809,14 @@ if run_clicked:
         else:
             vehicle_b = build_reference_vehicle(vehicle_a, region)
 
-        st.session_state.analysis_results = run_analysis(vehicle_a, vehicle_b, region, used_default_flag)
+        analysis_results = run_analysis(vehicle_a, vehicle_b, region, used_default_flag)
+        lookup_notes = []
+        if car_a.get("lookup_mode") == "class_fallback" and car_a.get("lookup_message"):
+            lookup_notes.append(car_a["lookup_message"])
+        if add_second_car and car_b and car_b.get("lookup_mode") == "class_fallback" and car_b.get("lookup_message"):
+            lookup_notes.append(car_b["lookup_message"])
+        analysis_results["lookup_note"] = " ".join(lookup_notes)
+        st.session_state.analysis_results = analysis_results
 
 
 results = st.session_state.analysis_results
@@ -694,7 +865,11 @@ else:
     st.dataframe(results["table"], use_container_width=True, hide_index=True)
 
     st.subheader("Narrative Explanation")
-    st.write(results["narrative"])
+    if results.get("lookup_note"):
+        st.info(results["lookup_note"])
+    st.write(summarize_narrative(results["narrative"]))
+    with st.expander("Detailed"):
+        st.write(results["narrative"])
 
     st.subheader("Recommendations")
     st.write(results["recommendation"])
