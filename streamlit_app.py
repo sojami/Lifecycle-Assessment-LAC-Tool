@@ -314,6 +314,26 @@ def get_model_suggestions(make: str, model_query: str) -> list[dict]:
     return suggestions
 
 
+def get_known_makes() -> list[str]:
+    return sorted({vehicle["make"] for vehicle in KNOWN_VEHICLE_CATALOG[1:]})
+
+
+def is_valid_make(make: str) -> bool:
+    normalized_make = (make or "").strip().lower()
+    if not normalized_make:
+        return False
+    return normalized_make in {known_make.lower() for known_make in get_known_makes()}
+
+
+def find_make_class_match(make: str, vehicle_class: str) -> dict | None:
+    normalized_make = (make or "").strip().lower()
+    normalized_class = (vehicle_class or "").strip().lower()
+    for vehicle in KNOWN_VEHICLE_CATALOG[1:]:
+        if vehicle["make"].lower() == normalized_make and vehicle["vehicle_class"] == normalized_class:
+            return vehicle
+    return None
+
+
 def suggest_production_region(make: str, model: str, tech_type: str) -> tuple[str, bool]:
     exact_match = PRODUCTION_REGION_HINTS.get((make.strip(), model.strip()))
     if exact_match:
@@ -432,11 +452,15 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         st.session_state[f"{prefix}_vehicle_class"] = suggested_vehicle["vehicle_class"]
 
     make = st.text_input("Make", key=f"{prefix}_make")
-    model = st.text_input("Model", key=f"{prefix}_model")
+    make_valid = is_valid_make(make)
+    if make and not make_valid:
+        st.error(f"{title}: make '{make}' was not found. Please enter a valid make before continuing.")
+
+    model = st.text_input("Model", key=f"{prefix}_model", disabled=not make_valid)
     inferred_text = f"{make} {model}".strip()
 
     model_suggestions = get_model_suggestions(make, model)
-    if model_suggestions and (make or model):
+    if make_valid and model_suggestions and (make or model):
         suggested_model_label = st.selectbox(
             f"{title} model suggestions",
             ["Keep typed entry"] + [vehicle["label"] for vehicle in model_suggestions],
@@ -459,6 +483,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         "Include year",
         key=f"{prefix}_include_year",
         value=st.session_state.get(f"{prefix}_include_year", suggested_vehicle["year"] is not None if suggested_vehicle else False),
+        disabled=not make_valid,
     )
     year = None
     if include_year:
@@ -470,6 +495,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
                 step=1,
                 key=f"{prefix}_year",
                 value=st.session_state.get(f"{prefix}_year", suggested_vehicle["year"] if suggested_vehicle and suggested_vehicle["year"] else 2024),
+                disabled=not make_valid,
             )
         )
 
@@ -485,6 +511,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         ),
         key=f"{prefix}_vehicle_class",
         help="Autofilled from a suggested vehicle when selected.",
+        disabled=not make_valid,
     )
     detected_tech_type = detect_tech(inferred_text) if inferred_text else "ICE"
     tech_type = st.selectbox(
@@ -493,6 +520,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         index=TECH_OPTIONS.index(st.session_state.get(f"{prefix}_tech_type", detected_tech_type)),
         key=f"{prefix}_tech_type",
         help="Autofilled from a suggested vehicle when selected, but fully editable.",
+        disabled=not make_valid,
     )
 
     normalized_tech_type = tech_type.upper()
@@ -501,20 +529,37 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
     is_custom_entry = not suggested_vehicle or suggested_vehicle["label"] == "Custom entry"
     lookup_mode = "empty"
     lookup_message = ""
-    if make and model:
+    if make_valid and make and model:
         specs = validate_vehicle_entry(make, model, year, normalized_vehicle_class, normalized_tech_type)
         if specs is None:
-            specs = get_vehicle_specs("", "", None, normalized_vehicle_class, normalized_tech_type)
-            lookup_mode = "class_fallback"
-            fallback_class = normalized_vehicle_class if normalized_vehicle_class != "other" else "sedan"
-            lookup_message = (
-                f"{title}: model '{model}' could not be found. Results will use class-based assumptions for "
-                f"'{fallback_class.replace('_', ' ')}'."
-            )
-            st.warning(lookup_message)
+            class_match = find_make_class_match(make, normalized_vehicle_class)
+            if class_match:
+                specs = validate_vehicle_entry(
+                    class_match["make"],
+                    class_match["model"],
+                    class_match["year"],
+                    class_match["vehicle_class"],
+                    class_match["tech_type"],
+                )
+                if specs:
+                    lookup_mode = "make_class_fallback"
+                    lookup_message = (
+                        f"{title}: model '{model}' could not be found. Results will use "
+                        f"{class_match['make']} {class_match['model']} as a representative "
+                        f"{normalized_vehicle_class.replace('_', ' ')} for this make."
+                    )
+                    st.warning(lookup_message)
+            if specs is None:
+                lookup_mode = "class_fallback"
+                lookup_message = (
+                    f"{title}: model '{model}' could not be found and no make-specific class match was available. "
+                    f"Results will use class-based assumptions for '{normalized_vehicle_class.replace('_', ' ')}'."
+                )
+                specs = get_vehicle_specs("", "", None, normalized_vehicle_class, normalized_tech_type)
+                st.warning(lookup_message)
         else:
             lookup_mode = "exact"
-    elif not is_custom_entry:
+    elif make_valid and not is_custom_entry:
         specs = get_vehicle_specs(make, model, year, normalized_vehicle_class, normalized_tech_type)
         lookup_mode = "suggested"
 
@@ -543,6 +588,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             step=1.0,
             key=f"{prefix}_fuel_economy_mpg",
             value=float(defaults["fuel_economy_mpg"] if defaults["fuel_economy_mpg"] is not None else 30.0),
+            disabled=not make_valid,
         )
 
     if tech_type in {"BEV", "PHEV"}:
@@ -552,6 +598,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             step=0.01,
             key=f"{prefix}_kwh_per_mile",
             value=float(defaults["kwh_per_mile"] if defaults["kwh_per_mile"] is not None else 0.30),
+            disabled=not make_valid,
         )
 
     if tech_type in {"BEV", "PHEV", "HEV"}:
@@ -561,6 +608,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
             step=0.1,
             key=f"{prefix}_battery_kwh",
             value=float(defaults["battery_kwh"] if defaults["battery_kwh"] is not None else 60.0),
+            disabled=not make_valid,
         )
 
     vehicle_mfg_kg = st.number_input(
@@ -569,6 +617,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         step=100.0,
         key=f"{prefix}_vehicle_mfg_kg",
         value=float(defaults["vehicle_mfg_kg"] if defaults["vehicle_mfg_kg"] is not None else 6500.0),
+        disabled=not make_valid,
     )
     battery_mfg_kg_per_kwh = st.number_input(
         "Battery manufacturing factor (kg CO2e/kWh)",
@@ -576,6 +625,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         step=1.0,
         key=f"{prefix}_battery_mfg_kg_per_kwh",
         value=80.0,
+        disabled=not make_valid,
     )
 
     vehicle_name = build_vehicle_name(year, make, model) or title
@@ -592,7 +642,8 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         "battery_kwh": float(battery_kwh) if battery_kwh is not None else None,
         "vehicle_mfg_kg": float(vehicle_mfg_kg),
         "battery_mfg_kg_per_kwh": float(battery_mfg_kg_per_kwh),
-        "lookup_valid": specs is not None if make and model else False,
+        "lookup_valid": specs is not None if make_valid and make and model else False,
+        "make_valid": make_valid,
         "lookup_mode": lookup_mode,
         "lookup_message": lookup_message,
     }
@@ -696,10 +747,20 @@ with st.sidebar:
     )
 
     car_a = render_vehicle_inputs("car_a", "Car A", lifetime_miles)
-    car_a_production_region = render_production_region_inputs("car_a", car_a)
+    if car_a.get("make_valid"):
+        car_a_production_region = render_production_region_inputs("car_a", car_a)
+    else:
+        car_a_production_region = None
+        st.caption("Enter a valid make for Car A to unlock production-region inputs.")
     add_second_car = st.toggle("Compare with a second car")
     car_b = render_vehicle_inputs("car_b", "Car B", lifetime_miles) if add_second_car else None
-    car_b_production_region = render_production_region_inputs("car_b", car_b) if add_second_car and car_b else None
+    if add_second_car and car_b and car_b.get("make_valid"):
+        car_b_production_region = render_production_region_inputs("car_b", car_b)
+    elif add_second_car and car_b:
+        car_b_production_region = None
+        st.caption("Enter a valid make for Car B to unlock production-region inputs.")
+    else:
+        car_b_production_region = None
 
     st.markdown("### Use-Phase Region")
     default_region_index = REGION_OPTIONS.index("usa") if "usa" in REGION_OPTIONS else 0
@@ -753,8 +814,12 @@ if "analysis_results" not in st.session_state:
 if run_clicked:
     if not car_a["name"] or car_a["name"] == "Car A":
         st.sidebar.error("Please complete Car A before running the analysis.")
+    elif not car_a.get("make_valid", False):
+        st.sidebar.error("Car A make is invalid. Please enter a valid make before continuing.")
     elif add_second_car and car_b and (not car_b["name"] or car_b["name"] == "Car B"):
         st.sidebar.error("Please complete Car B or turn off the second-car comparison.")
+    elif add_second_car and car_b and not car_b.get("make_valid", False):
+        st.sidebar.error("Car B make is invalid. Please enter a valid make before continuing.")
     else:
         grid_intensity_value = float(grid_kg_per_kwh)
         fuel_intensity_value = float(fuel_kg_per_gallon)
