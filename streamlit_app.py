@@ -499,8 +499,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
     canonical_make = normalize_make_input(make)
     if make_valid and canonical_make and make.strip() != canonical_make:
         st.caption(f"{title}: using closest valid make match `{canonical_make}`.")
-        make = canonical_make
-        st.session_state[f"{prefix}_make"] = canonical_make
+    effective_make = canonical_make or make
     if make and not make_valid:
         st.error(f"{title}: make '{make}' was not found. Please enter a valid make before continuing.")
 
@@ -578,9 +577,9 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
     lookup_mode = "empty"
     lookup_message = ""
     if make_valid and make and model:
-        specs = validate_vehicle_entry(canonical_make or make, model, year, normalized_vehicle_class, normalized_tech_type)
+        specs = validate_vehicle_entry(effective_make, model, year, normalized_vehicle_class, normalized_tech_type)
         if specs is None:
-            class_match = find_make_class_match(canonical_make or make, normalized_vehicle_class)
+            class_match = find_make_class_match(effective_make, normalized_vehicle_class)
             if class_match:
                 specs = validate_vehicle_entry(
                     class_match["make"],
@@ -608,7 +607,7 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         else:
             lookup_mode = "exact"
     elif make_valid and not is_custom_entry:
-        specs = get_vehicle_specs(canonical_make or make, model, year, normalized_vehicle_class, normalized_tech_type)
+        specs = get_vehicle_specs(effective_make, model, year, normalized_vehicle_class, normalized_tech_type)
         lookup_mode = "suggested"
 
     if specs:
@@ -676,9 +675,9 @@ def render_vehicle_inputs(prefix: str, title: str, lifetime_miles: float) -> dic
         disabled=not make_valid,
     )
 
-    vehicle_name = build_vehicle_name(year, canonical_make or make, model) or title
+    vehicle_name = build_vehicle_name(year, effective_make, model) or title
     return {
-        "make": canonical_make or make,
+        "make": effective_make,
         "model": model,
         "year": year,
         "name": vehicle_name,
